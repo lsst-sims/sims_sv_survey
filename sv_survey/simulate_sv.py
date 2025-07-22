@@ -1,6 +1,12 @@
+import argparse
+import bz2
+import gzip
 import logging
+import lzma
+import pickle
 import sqlite3
 import sys
+import typing
 import warnings
 from typing import Any
 
@@ -21,7 +27,7 @@ from rubin_scheduler.utils import Site
 
 from . import sv_support as svs
 
-sys.path.insert(0, "/Users/lynnej/lsst_repos/ts_config_ocs/Scheduler/feature_scheduler/maintel/")
+#sys.path.insert(0, "/Users/lynnej/lsst_repos/ts_config_ocs/Scheduler/feature_scheduler/maintel/")
 import fbs_config_sv_survey
 
 logger = logging.getLogger(__name__)
@@ -30,6 +36,10 @@ __all__ = [
     "fetch_previous_sv_visits",
     "setup_sv",
     "run_sv_sim",
+    "make_sv_scheduler_cli",
+    "make_model_observatory_cli",
+    "make_band_scheduler",
+    "run_sv_sim_cli"
 ]
 
 
@@ -85,7 +95,7 @@ def setup_sv(
     filename: str | None = None,
     tokenfile: str | None = None,
     site: str = "usdf",
-):
+) -> tuple:
     """Set up the SV survey scheduler and model observatory.
      Read previous SV visits into scheduler for startup.
 
@@ -212,7 +222,7 @@ def run_sv_sim(
     day_obs_str = rn_dayobs.day_obs_int_to_str(day_obs)
     day_obs_time = Time(f"{day_obs_str}T12:00:00", format="isot", scale="utc")
 
-    observer = Observer.at_site(Site("LSST").to_earth_location())
+    observer = Observer(Site("LSST").to_earth_location())
     sunset = Time(
         observer.sun_set_time(day_obs_time, which="next", horizon=-6 * u.deg),
         format="jd",
@@ -309,3 +319,125 @@ def sv_sim(
     )
 
     return visits, survey_info
+
+
+def make_sv_scheduler_cli(cli_args: list = []) -> int:
+    parser = argparse.ArgumentParser(description="Create a pickle of an SV scheduler")
+    parser.add_argument("file_name", type=str, help="Name of pickle file to write.")
+    parser.add_argument("--opsim", type=str, default="", help="Name of opsim visits file to load.")
+    args = parser.parse_args() if len(cli_args) == 0 else parser.parse_args(cli_args)
+    opsim_fname = args.opsim
+    scheduler_fname = args.file_name
+
+    # Set up the scheduler from the config file from ts_config_ocs.
+    nside, scheduler = fbs_config_sv_survey.get_scheduler()
+    print("NSIDE: ", nside)
+
+    # Read opsim visits and add to the scheduler
+    if len(opsim_fname) > 0:
+        obs = SchemaConverter().opsim2obs(opsim_fname)
+        scheduler.add_observations_array(obs)
+
+    # Save to a pickle
+    with open(scheduler_fname, "wb") as sched_io:
+        pickle.dump(scheduler, sched_io)
+
+    return 0
+
+
+def make_model_observatory_cli(cli_args: list = []) -> int:
+    parser = argparse.ArgumentParser(description="Create a pickle of a model observatory")
+    parser.add_argument("file_name", type=str, help="Name of pickle file to write.")
+    parser.add_argument("--nside", type=int, default=32, help="nside for the model observatory.")
+    parser.add_argument(
+        "--no-downtime",
+        action='store_true',
+        dest='no_downtime',
+        help="Include scheduled downtime")
+    parser.add_argument("--seeing", type=float, default=0, help="Seeing to use")
+    args = parser.parse_args() if len(cli_args) == 0 else parser.parse_args(cli_args)
+    observatory_fname = args.file_name
+    nside = args.nside
+    no_downtime = args.no_downtime
+    seeing = None if args.seeing == 0 else args.seeing
+
+
+    # Find the survey information - survey start, downtime simulation ..
+    survey_info = svs.survey_times(verbose=True, no_downtime=no_downtime, nside=nside)
+
+    # This isn't strictly necessary for survey_info but adds useful
+    # potential footprint information for plotting purposes
+    survey_info.update(svc.survey_footprint(survey_start_mjd=survey_info["survey_start"].mjd, nside=nside))
+
+    # Now that we have downtime, set up model observatory.
+    observatory = svs.setup_observatory_summit(survey_info, seeing=seeing)
+
+    # Save to a pickle
+    with open(observatory_fname, "wb") as observatory_io:
+        pickle.dump(observatory, observatory_io)
+
+    return 0
+
+def make_band_scheduler_cli(cli_args: list = []) -> int:
+    parser = argparse.ArgumentParser(description="Create a pickle of a band scheduler")
+    parser.add_argument("file_name", type=str, help="Name of pickle file to write.")
+    parser.add_argument("--illum_limit", type=float, default=40, help="Illumination limit.")
+    args = parser.parse_args() if len(cli_args) == 0 else parser.parse_args(cli_args)
+    file_name = args.file_name
+    illum_limit = args.illum_limit
+
+    band_scheduler = SimpleBandSched(illum_limit=illum_limit)
+
+    with open(file_name, "wb") as bs_io:
+        pickle.dump(band_scheduler, bs_io)
+
+    return 0
+
+def run_sv_sim_cli(cli_args: list = []) -> int:
+    parser = argparse.ArgumentParser(description="Run an SV simulation.")
+    parser.add_argument("scheduler", type=str, help="scheduler pickle file.")
+    parser.add_argument("observatory", type=str, help="model observatory pickle file.")
+    parser.add_argument("initial_opsim", type=str, help="initial opsim database.")
+    parser.add_argument("day_obs", type=int, help="start day obs.")
+    parser.add_argument("sim_nights", type=int, help="number of nights to run.")
+    parser.add_argument("run_name", type=str, help="Run (also db output) name.")
+    parser.add_argument(
+        "--no-downtime",
+        action='store_true',
+        dest='no_downtime',
+        help="Include scheduled downtime")
+    args = parser.parse_args() if len(cli_args) == 0 else parser.parse_args(cli_args)
+
+    with open(args.scheduler, 'rb') as sched_io:
+        scheduler = pickle.load(sched_io)
+
+    with open(args.observatory, 'rb') as obsv_io:
+        observatory = pickle.load(obsv_io)
+
+    initial_opsim = None
+    if len(args.initial_opsim) > 0:
+        converter = SchemaConverter()
+        initial_obs = converter.opsim2obs(args.initial_opsim)
+        initial_opsim = converter.obs2opsim(initial_obs)
+
+    day_obs = args.day_obs
+    sim_nights = args.sim_nights
+    run_name = args.run_name
+    no_downtime = args.no_downtime
+    nside = observatory.nside
+
+    survey_info = svs.survey_times(verbose=True, no_downtime=no_downtime, nside=nside)
+
+    run_sv_sim(
+        scheduler,
+        observatory,
+        survey_info,
+        initial_opsim,
+        day_obs,
+        sim_nights,
+        anomalous_overhead_func = None,
+        run_name = run_name
+    )
+
+    return 0
+
