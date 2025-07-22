@@ -9,7 +9,6 @@ import lsst.ts.fbs.utils.maintel.sv_config as svc
 import pandas as pd
 import rubin_nights.dayobs_utils as rn_dayobs
 import rubin_nights.rubin_sim_addons as rn_sim
-
 from astroplan import Observer
 from astropy.time import Time, TimeDelta
 from rubin_nights import connections
@@ -18,6 +17,7 @@ from rubin_scheduler.scheduler import sim_runner
 from rubin_scheduler.scheduler.model_observatory import ModelObservatory
 from rubin_scheduler.scheduler.schedulers import CoreScheduler, SimpleBandSched
 from rubin_scheduler.scheduler.utils import SchemaConverter
+from rubin_scheduler.utils import Site
 
 from . import sv_support as svs
 
@@ -212,7 +212,7 @@ def run_sv_sim(
     day_obs_str = rn_dayobs.day_obs_int_to_str(day_obs)
     day_obs_time = Time(f"{day_obs_str}T12:00:00", format="isot", scale="utc")
 
-    observer = Observer.at_site("Rubin")
+    observer = Observer.at_site(Site("LSST").to_earth_location())
     sunset = Time(
         observer.sun_set_time(day_obs_time, which="next", horizon=-6 * u.deg),
         format="jd",
