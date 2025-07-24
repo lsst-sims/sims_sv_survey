@@ -1,16 +1,14 @@
 import argparse
-import bz2
-import gzip
 import logging
-import lzma
 import pickle
 import sqlite3
-import sys
-import typing
 import warnings
 from typing import Any
 
 import astropy.units as u
+
+# sys.path.insert(0, "/Users/lynnej/lsst_repos/ts_config_ocs/Scheduler/feature_scheduler/maintel/")
+import fbs_config_sv_survey
 import lsst.ts.fbs.utils.maintel.sv_config as svc
 import pandas as pd
 import rubin_nights.dayobs_utils as rn_dayobs
@@ -27,9 +25,6 @@ from rubin_scheduler.utils import Site
 
 from . import sv_support as svs
 
-#sys.path.insert(0, "/Users/lynnej/lsst_repos/ts_config_ocs/Scheduler/feature_scheduler/maintel/")
-import fbs_config_sv_survey
-
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -38,8 +33,8 @@ __all__ = [
     "run_sv_sim",
     "make_sv_scheduler_cli",
     "make_model_observatory_cli",
-    "make_band_scheduler",
-    "run_sv_sim_cli"
+    "make_band_scheduler_cli",
+    "run_sv_sim_cli",
 ]
 
 
@@ -350,17 +345,14 @@ def make_model_observatory_cli(cli_args: list = []) -> int:
     parser.add_argument("file_name", type=str, help="Name of pickle file to write.")
     parser.add_argument("--nside", type=int, default=32, help="nside for the model observatory.")
     parser.add_argument(
-        "--no-downtime",
-        action='store_true',
-        dest='no_downtime',
-        help="Include scheduled downtime")
+        "--no-downtime", action="store_true", dest="no_downtime", help="Include scheduled downtime"
+    )
     parser.add_argument("--seeing", type=float, default=0, help="Seeing to use")
     args = parser.parse_args() if len(cli_args) == 0 else parser.parse_args(cli_args)
     observatory_fname = args.file_name
     nside = args.nside
     no_downtime = args.no_downtime
     seeing = None if args.seeing == 0 else args.seeing
-
 
     # Find the survey information - survey start, downtime simulation ..
     survey_info = svs.survey_times(verbose=True, no_downtime=no_downtime, nside=nside)
@@ -378,6 +370,7 @@ def make_model_observatory_cli(cli_args: list = []) -> int:
 
     return 0
 
+
 def make_band_scheduler_cli(cli_args: list = []) -> int:
     parser = argparse.ArgumentParser(description="Create a pickle of a band scheduler")
     parser.add_argument("file_name", type=str, help="Name of pickle file to write.")
@@ -393,6 +386,7 @@ def make_band_scheduler_cli(cli_args: list = []) -> int:
 
     return 0
 
+
 def run_sv_sim_cli(cli_args: list = []) -> int:
     parser = argparse.ArgumentParser(description="Run an SV simulation.")
     parser.add_argument("scheduler", type=str, help="scheduler pickle file.")
@@ -402,16 +396,14 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
     parser.add_argument("sim_nights", type=int, help="number of nights to run.")
     parser.add_argument("run_name", type=str, help="Run (also db output) name.")
     parser.add_argument(
-        "--no-downtime",
-        action='store_true',
-        dest='no_downtime',
-        help="Include scheduled downtime")
+        "--no-downtime", action="store_true", dest="no_downtime", help="Include scheduled downtime"
+    )
     args = parser.parse_args() if len(cli_args) == 0 else parser.parse_args(cli_args)
 
-    with open(args.scheduler, 'rb') as sched_io:
+    with open(args.scheduler, "rb") as sched_io:
         scheduler = pickle.load(sched_io)
 
-    with open(args.observatory, 'rb') as obsv_io:
+    with open(args.observatory, "rb") as obsv_io:
         observatory = pickle.load(obsv_io)
 
     initial_opsim = None
@@ -435,9 +427,8 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
         initial_opsim,
         day_obs,
         sim_nights,
-        anomalous_overhead_func = None,
-        run_name = run_name
+        anomalous_overhead_func=None,
+        run_name=run_name,
     )
 
     return 0
-

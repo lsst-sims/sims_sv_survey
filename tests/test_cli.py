@@ -29,7 +29,7 @@ def temp_cwd() -> None:
 
 class TestSVCLI(unittest.TestCase):
 
-#    @unittest.skip("redundant")
+    #    @unittest.skip("redundant")
     def test_make_sv_scheduler_cli(self) -> None:
         with temp_cwd():
             sceduler_pickle = "scheduler.p"
@@ -41,7 +41,7 @@ class TestSVCLI(unittest.TestCase):
 
             assert isinstance(scheduler, CoreScheduler)
 
-#    @unittest.skip("redundant")
+    #    @unittest.skip("redundant")
     def test_make_model_observatory_cli(self) -> None:
         with temp_cwd():
             observatory_pickle = "observatory.p"
