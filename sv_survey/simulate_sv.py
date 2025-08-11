@@ -1,14 +1,17 @@
 import argparse
+import importlib
+import importlib.util
 import logging
 import pickle
 import sqlite3
+import sys
+import types
 import warnings
-from typing import Any
+from typing import Any, Tuple
+from pathlib import Path
 
 import astropy.units as u
 
-# sys.path.insert(0, "/Users/lynnej/lsst_repos/ts_config_ocs/Scheduler/feature_scheduler/maintel/")
-import fbs_config_sv_survey
 import lsst.ts.fbs.utils.maintel.sv_config as svc
 import pandas as pd
 import rubin_nights.dayobs_utils as rn_dayobs
@@ -22,8 +25,12 @@ from rubin_scheduler.scheduler.model_observatory import ModelObservatory
 from rubin_scheduler.scheduler.schedulers import CoreScheduler, SimpleBandSched
 from rubin_scheduler.scheduler.utils import SchemaConverter
 from rubin_scheduler.utils import Site
+from rubin_scheduler.scheduler.schedulers.core_scheduler import CoreScheduler
 
 from . import sv_support as svs
+
+# For backwards compatibility
+CONFIG_SCRIPT_PATH = "/Users/lynnej/lsst_repos/ts_config_ocs/Scheduler/feature_scheduler/maintel/fbs_config_sv_survey.py"
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +131,7 @@ def setup_sv(
     """
 
     # Set up the scheduler from the config file from ts_config_ocs.
-    nside, scheduler = fbs_config_sv_survey.get_scheduler()
+    nside, scheduler = get_scheduler_from_config(CONFIG_SCRIPT_PATH)
 
     # Find the survey information - survey start, downtime simulation ..
     survey_info = svs.survey_times(verbose=True, no_downtime=no_downtime, nside=nside)
@@ -315,17 +322,66 @@ def sv_sim(
 
     return visits, survey_info
 
+def get_scheduler_from_config(config_script_path: str | Path) -> Tuple[int, CoreScheduler]:
+    """Generate a CoreScheduler according to a configuration in a file.
+
+    Parameters
+    ----------
+    config_script_path : `str`
+        The configuration script path
+
+    Returns
+    -------
+    nside : `int`
+        The nside.
+    scheduler : `CoreScheduler`
+        An instance of the Rubin Observatory FBS.
+
+    Raises
+    ------
+    ValueError
+        If the config file is invalid, or has invalid content.
+    """
+
+    # Follow example from official python docs:
+    # https://docs.python.org/3/library/importlib.html#importing-a-source-file-directly
+    # The T&S supplied files have code in a __name__ == 'config' conditional
+    # that we need to be executed, so we *must* name the module "config"
+    config_module_name: str = "config"
+    config_module_spec = importlib.util.spec_from_file_location(config_module_name, config_script_path)
+    if config_module_spec is None or config_module_spec.loader is None:
+        # Make type checking happy
+        raise ValueError(f"Cannot load config file {config_script_path}")
+
+    config_module: types.ModuleType = importlib.util.module_from_spec(config_module_spec)
+    sys.modules[config_module_name] = config_module
+    config_module_spec.loader.exec_module(config_module)
+
+    try:
+        scheduler: CoreScheduler = config_module.scheduler
+        nside: int = scheduler.nside
+    except NameError:
+        nside: int, scheduler: CoreScheduler = config_module.get_scheduler()
+
+    return nside, scheduler
 
 def make_sv_scheduler_cli(cli_args: list = []) -> int:
     parser = argparse.ArgumentParser(description="Create a pickle of an SV scheduler")
     parser.add_argument("file_name", type=str, help="Name of pickle file to write.")
     parser.add_argument("--opsim", type=str, default="", help="Name of opsim visits file to load.")
+    parser.add_argument(
+        "--config-script",
+        type=str,
+        default=CONFIG_SCRIPT_PATH,
+        help="Path to the config script for the scheduler.",
+    )
     args = parser.parse_args() if len(cli_args) == 0 else parser.parse_args(cli_args)
     opsim_fname = args.opsim
     scheduler_fname = args.file_name
+    scheduler_config_script = args.config_script
 
     # Set up the scheduler from the config file from ts_config_ocs.
-    nside, scheduler = fbs_config_sv_survey.get_scheduler()
+    nside, scheduler = get_scheduler_from_config(scheduler_config_script)
     print("NSIDE: ", nside)
 
     # Read opsim visits and add to the scheduler
