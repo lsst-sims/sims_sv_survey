@@ -25,6 +25,7 @@ from rubin_scheduler.scheduler.utils import (
 from rubin_scheduler.utils import Site
 from rubin_sim.sim_archive import make_sim_archive_dir, transfer_archive_dir
 from rubin_sim.sim_archive.make_snapshot import get_scheduler_from_config
+from rubin_sim.sim_archive.prenight import AnomalousOverheadFunc
 
 from . import sv_support as svs
 
@@ -528,6 +529,13 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
     )
     parser.add_argument("--label", type=str, default="", help="The tags on the simulation.")
     parser.add_argument("--delay", type=float, default=0.0, help="Minutes after nominal to start.")
+    parser.add_argument("--anom_overhead_scale", type=float, default=0.0, help="scale of scatter in the slew")
+    parser.add_argument(
+        "--anom_overhead_seed",
+        type=int,
+        default=1,
+        help="random number seed for anomalous scatter in overhead",
+    )
     parser.add_argument("--tags", type=str, default=[], nargs="*", help="The tags on the simulation.")
     args = parser.parse_args() if len(cli_args) == 0 else parser.parse_args(cli_args)
 
@@ -555,6 +563,13 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
     capture_env = args.capture_env
     telescope = args.telescope
     delay = args.delay
+    anom_overhead_scale = args.anom_overhead_scale
+    anom_overhead_seed = args.anom_overhead_seed
+
+    if anom_overhead_scale > 0:
+        anomalous_overhead_func = AnomalousOverheadFunc(anom_overhead_seed, anom_overhead_scale)
+    else:
+        anomalous_overhead_func = None
 
     if keep_rewards:
         scheduler.keep_rewards = keep_rewards
@@ -569,7 +584,7 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
             initial_opsim,
             day_obs,
             sim_nights,
-            anomalous_overhead_func=None,
+            anomalous_overhead_func=anomalous_overhead_func,
             run_name=run_name,
             keep_rewards=keep_rewards,
             delay=delay,
@@ -582,7 +597,7 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
             survey_info,
             day_obs,
             sim_nights,
-            anomalous_overhead_func=None,
+            anomalous_overhead_func=anomalous_overhead_func,
             keep_rewards=keep_rewards,
             delay=delay,
         )
