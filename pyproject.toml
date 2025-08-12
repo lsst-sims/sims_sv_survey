@@ -44,6 +44,7 @@ dev = [
 ]
 
 [project.scripts]
+fetch_sv_visits = "sv_survey.simulate_sv:fetch_sv_visits_cli"
 make_sv_scheduler = "sv_survey.simulate_sv:make_sv_scheduler_cli"
 make_model_observatory = "sv_survey.simulate_sv:make_model_observatory_cli"
 make_band_scheduler = "sv_survey.simulate_sv:make_band_scheduler_cli"

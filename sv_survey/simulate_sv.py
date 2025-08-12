@@ -41,6 +41,7 @@ __all__ = [
     "fetch_previous_sv_visits",
     "setup_sv",
     "run_sv_sim",
+    "fetch_sv_visits_cli",
     "make_sv_scheduler_cli",
     "make_model_observatory_cli",
     "make_band_scheduler_cli",
@@ -384,6 +385,27 @@ def sv_sim(
     )
 
     return visits, survey_info
+
+
+def fetch_sv_visits_cli(cli_args: list = []) -> int:
+    parser = argparse.ArgumentParser(description="Query the consdb for completed sv visits")
+    parser.add_argument("dayobs", type=int, help="Dayobs before which to query.")
+    parser.add_argument("file_name", type=str, help="Name of opsim db file to write.")
+    parser.add_argument(
+        "--site", type=str, default="usdf", help="site of consdb to query (usdf, usdf-dev, or summit)"
+    )
+    args = parser.parse_args() if len(cli_args) == 0 else parser.parse_args(cli_args)
+
+    dayobs = args.dayobs
+    file_name = args.file_name
+    site = args.site
+
+    visits = fetch_previous_sv_visits(dayobs, site=site)
+
+    with sqlite3.connect(file_name) as connection:
+        visits.to_sql("observations", connection, index=False)
+
+    return 0
 
 
 def make_sv_scheduler_cli(cli_args: list = []) -> int:
