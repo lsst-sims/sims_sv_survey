@@ -176,6 +176,7 @@ def _simple_run_sv_sim(
     sim_nights: int | None = None,
     anomalous_overhead_func: Any | None = None,
     keep_rewards: bool = False,
+    delay: float = 0,
 ) -> tuple[np.recarray, CoreScheduler, ModelObservatory, pd.DataFrame, pd.DataFrame, dict]:
     """Run the (already set up) scheduler and observatory for
     the appropriate length of time.
@@ -202,6 +203,8 @@ def _simple_run_sv_sim(
         Defaults to None.
     keep_rewards
         If True, will compute and return rewards.
+    delay
+        Number of minutes by which simulated observing should be delayed.
 
     Returns
     -------
@@ -236,7 +239,19 @@ def _simple_run_sv_sim(
         format="jd",
     )
 
-    sim_start = sunset.mjd - 15 / 60 / 24
+    # If a delay is requested, set the delay relative to 12 degree twilight.
+    # This might not always be correct. Ideally, we might need to start with a
+    # mini-simulation to test where the first visit comes out without a delay,
+    # then follow it with a second sim starting delayed relative to that.
+    if delay > 0:
+        nominal_start = Time(
+            observer.sun_set_time(day_obs_time, which="next", horizon=-12 * u.deg),
+            format="jd",
+        ).mjd
+        sim_start = nominal_start + delay / (24.0 * 60.0)
+    else:
+        sim_start = sunset.mjd - 15 / 60 / 24
+
     if sim_nights is not None:
         # end at sunrise after sim_nights
         sim_end = (sunrise + TimeDelta(sim_nights, format="jd")).mjd
@@ -287,6 +302,7 @@ def run_sv_sim(
     anomalous_overhead_func: Any | None = None,
     run_name: str | None = None,
     keep_rewards: bool = False,
+    delay: float = 0,
 ) -> tuple[pd.DataFrame, CoreScheduler, ModelObservatory, pd.DataFrame, pd.DataFrame, dict]:
     """Run the (already set up) scheduler and observatory for
     the appropriate length of time.
@@ -316,6 +332,8 @@ def run_sv_sim(
         If None, defaults to `sv_{day_obs}.db`
     keep_rewards
         If True, will compute and return rewards.
+    delay
+        Number of minutes by which simulated observing should be delayed.
 
     Returns
     -------
@@ -335,6 +353,7 @@ def run_sv_sim(
         sim_nights,
         anomalous_overhead_func,
         keep_rewards,
+        delay,
     )
 
     if run_name is None:
@@ -508,6 +527,7 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
         help="Record the current environment as the simulation environment.",
     )
     parser.add_argument("--label", type=str, default="", help="The tags on the simulation.")
+    parser.add_argument("--delay", type=float, default=0.0, help="Minutes after nominal to start.")
     parser.add_argument("--tags", type=str, default=[], nargs="*", help="The tags on the simulation.")
     args = parser.parse_args() if len(cli_args) == 0 else parser.parse_args(cli_args)
 
@@ -534,6 +554,7 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
     label = args.label
     capture_env = args.capture_env
     telescope = args.telescope
+    delay = args.delay
 
     if keep_rewards:
         scheduler.keep_rewards = keep_rewards
@@ -551,6 +572,7 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
             anomalous_overhead_func=None,
             run_name=run_name,
             keep_rewards=keep_rewards,
+            delay=delay,
         )
     else:
         LOGGER.info("Starting simulation")
@@ -562,6 +584,7 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
             sim_nights,
             anomalous_overhead_func=None,
             keep_rewards=keep_rewards,
+            delay=delay,
         )
         LOGGER.info("Simualtion complete.")
 
