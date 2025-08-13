@@ -411,6 +411,7 @@ def fetch_sv_visits_cli(cli_args: list = []) -> int:
     parser = argparse.ArgumentParser(description="Query the consdb for completed sv visits")
     parser.add_argument("dayobs", type=int, help="Dayobs before which to query.")
     parser.add_argument("file_name", type=str, help="Name of opsim db file to write.")
+    parser.add_argument("token_file", type=str, help="files with USDF access token")
     parser.add_argument(
         "--site", type=str, default="usdf", help="site of consdb to query (usdf, usdf-dev, or summit)"
     )
@@ -418,9 +419,10 @@ def fetch_sv_visits_cli(cli_args: list = []) -> int:
 
     dayobs = args.dayobs
     file_name = args.file_name
+    token_file = args.token_file
     site = args.site
 
-    visits = fetch_previous_sv_visits(dayobs, site=site)
+    visits = fetch_previous_sv_visits(dayobs, token_file, site=site)
 
     with sqlite3.connect(file_name) as connection:
         visits.to_sql("observations", connection, index=False)
