@@ -1,4 +1,5 @@
 import argparse
+import getpass
 import logging
 import pickle
 import sqlite3
@@ -6,10 +7,8 @@ import warnings
 from typing import Any
 
 import astropy.units as u
-
-# sys.path.insert(0, "/Users/lynnej/lsst_repos/ts_config_ocs/Scheduler/feature_scheduler/maintel/")
-import fbs_config_sv_survey
 import lsst.ts.fbs.utils.maintel.sv_config as svc
+import numpy as np
 import pandas as pd
 import rubin_nights.dayobs_utils as rn_dayobs
 import rubin_nights.rubin_sim_addons as rn_sim
@@ -20,17 +19,30 @@ from rubin_nights.augment_visits import augment_visits
 from rubin_scheduler.scheduler import sim_runner
 from rubin_scheduler.scheduler.model_observatory import ModelObservatory
 from rubin_scheduler.scheduler.schedulers import CoreScheduler, SimpleBandSched
-from rubin_scheduler.scheduler.utils import SchemaConverter
+from rubin_scheduler.scheduler.utils import (
+    SchemaConverter,
+)
 from rubin_scheduler.utils import Site
+from rubin_sim.sim_archive import make_sim_archive_dir, transfer_archive_dir
+from rubin_sim.sim_archive.make_snapshot import get_scheduler_from_config
+from rubin_sim.sim_archive.prenight import AnomalousOverheadFunc
 
 from . import sv_support as svs
 
-logger = logging.getLogger(__name__)
+CONFIG_SCRIPT_PATH = "fbs_config_sv_survey.py"
+
+# For backwards compatibility
+if getpass.getuser() == "lynnej":
+    LYNNES_DIR = "/Users/lynnej/lsst_repos/ts_config_ocs/Scheduler/feature_scheduler/maintel/"
+    CONFIG_SCRIPT_PATH = "/".join([LYNNES_DIR, CONFIG_SCRIPT_PATH])
+
+LOGGER = logging.getLogger(__name__)
 
 __all__ = [
     "fetch_previous_sv_visits",
     "setup_sv",
     "run_sv_sim",
+    "fetch_sv_visits_cli",
     "make_sv_scheduler_cli",
     "make_model_observatory_cli",
     "make_band_scheduler_cli",
@@ -124,7 +136,7 @@ def setup_sv(
     """
 
     # Set up the scheduler from the config file from ts_config_ocs.
-    nside, scheduler = fbs_config_sv_survey.get_scheduler()
+    nside, scheduler = get_scheduler_from_config(CONFIG_SCRIPT_PATH)
 
     # Find the survey information - survey start, downtime simulation ..
     survey_info = svs.survey_times(verbose=True, no_downtime=no_downtime, nside=nside)
@@ -157,16 +169,16 @@ def setup_sv(
     return scheduler, observatory, survey_info, initial_opsim
 
 
-def run_sv_sim(
+def _simple_run_sv_sim(
     scheduler: CoreScheduler,
     observatory: ModelObservatory,
     survey_info: dict,
-    initial_opsim: pd.DataFrame,
     day_obs: int,
     sim_nights: int | None = None,
     anomalous_overhead_func: Any | None = None,
-    run_name: str | None = None,
-) -> tuple[pd.DataFrame, CoreScheduler, ModelObservatory, pd.DataFrame, pd.DataFrame, dict]:
+    keep_rewards: bool = False,
+    delay: float = 0,
+) -> tuple[np.recarray, CoreScheduler, ModelObservatory, pd.DataFrame, pd.DataFrame, dict]:
     """Run the (already set up) scheduler and observatory for
     the appropriate length of time.
 
@@ -190,13 +202,14 @@ def run_sv_sim(
         (in seconds) as argument, and returns and additional offset (also
         in seconds) to be applied as additional overhead between exposures.
         Defaults to None.
-    run_name
-        String to use as the run name, to save the results to disk.
-        If None, defaults to `sv_{day_obs}.db`.
+    keep_rewards
+        If True, will compute and return rewards.
+    delay
+        Number of minutes by which simulated observing should be delayed.
 
     Returns
     -------
-    visits, scheduler, observatory, rewards, obs_rewards, survey_info
+    sim_observations, scheduler, observatory, rewards, obs_rewards, survey_info
 
     Notes
     -----
@@ -227,7 +240,19 @@ def run_sv_sim(
         format="jd",
     )
 
-    sim_start = sunset.mjd - 15 / 60 / 24
+    # If a delay is requested, set the delay relative to 12 degree twilight.
+    # This might not always be correct. Ideally, we might need to start with a
+    # mini-simulation to test where the first visit comes out without a delay,
+    # then follow it with a second sim starting delayed relative to that.
+    if delay > 0:
+        nominal_start = Time(
+            observer.sun_set_time(day_obs_time, which="next", horizon=-12 * u.deg),
+            format="jd",
+        ).mjd
+        sim_start = nominal_start + delay / (24.0 * 60.0)
+    else:
+        sim_start = sunset.mjd - 15 / 60 / 24
+
     if sim_nights is not None:
         # end at sunrise after sim_nights
         sim_end = (sunrise + TimeDelta(sim_nights, format="jd")).mjd
@@ -238,7 +263,6 @@ def run_sv_sim(
     # Set observatory MJD
     observatory.mjd = sim_start
 
-    keep_rewards = False
     # The scheduler is noisy.
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
@@ -263,14 +287,81 @@ def run_sv_sim(
         rewards = []
         obs_rewards = []
 
+    # Check remaining observations to ensure we scheduled all available time.
+    survey_info = svs.count_obstime(sim_observations, survey_info)
+
+    return sim_observations, scheduler, observatory, rewards, obs_rewards, survey_info
+
+
+def run_sv_sim(
+    scheduler: CoreScheduler,
+    observatory: ModelObservatory,
+    survey_info: dict,
+    initial_opsim: pd.DataFrame,
+    day_obs: int,
+    sim_nights: int | None = None,
+    anomalous_overhead_func: Any | None = None,
+    run_name: str | None = None,
+    keep_rewards: bool = False,
+    delay: float = 0,
+) -> tuple[pd.DataFrame, CoreScheduler, ModelObservatory, pd.DataFrame, pd.DataFrame, dict]:
+    """Run the (already set up) scheduler and observatory for
+    the appropriate length of time.
+
+    Parameters
+    ----------
+    scheduler
+        The CoreScheduler, ready to run the simulation with previous visits,
+        if applicable.
+    observatory
+        The ModelObservatory, configured to run the simulation.
+    survey_info
+        Dictionary containing survey_start and (potentially) survey_end
+        astropy Time dates. Returned from `sv_support.survey_times`.
+    day_obs
+        The integer dayobs on which to start the simulation.
+    sim_nights
+        The number of nights to run the simulation. If None, then run
+        to the end of survey specified in survey_info.
+    anomalous_overhead_func
+        A function or callable object that takes the visit time and slew time
+        (in seconds) as argument, and returns and additional offset (also
+        in seconds) to be applied as additional overhead between exposures.
+        Defaults to None.
+    run_name
+        String to use as the run name, to save the results to disk.
+        If None, defaults to `sv_{day_obs}.db`
+    keep_rewards
+        If True, will compute and return rewards.
+    delay
+        Number of minutes by which simulated observing should be delayed.
+
+    Returns
+    -------
+    visits, scheduler, observatory, rewards, obs_rewards, survey_info
+    """
+
+    # The actual work of running the simulation is separated into
+    # _simple_run_sv_sim so that it can be run without the final step of
+    # combining the simulated visits with the initial_opsim visits and saved,
+    # while still preserving the previous behavior of calls to run_sv_sim.
+
+    sim_observations, scheduler, observatory, rewards, obs_rewards, survey_info = _simple_run_sv_sim(
+        scheduler,
+        observatory,
+        survey_info,
+        day_obs,
+        sim_nights,
+        anomalous_overhead_func,
+        keep_rewards,
+        delay,
+    )
+
     if run_name is None:
         run_name = f"sv_{day_obs}"
 
     # Save (all) visits to disk and join initial + new observations
     visits = svs.save_opsim(observatory, sim_observations, initial_opsim, f"{run_name}.db")
-
-    # Check remaining observations to ensure we scheduled all available time.
-    survey_info = svs.count_obstime(sim_observations, survey_info)
 
     return visits, scheduler, observatory, rewards, obs_rewards, survey_info
 
@@ -316,16 +407,46 @@ def sv_sim(
     return visits, survey_info
 
 
+def fetch_sv_visits_cli(cli_args: list = []) -> int:
+    parser = argparse.ArgumentParser(description="Query the consdb for completed sv visits")
+    parser.add_argument("dayobs", type=int, help="Dayobs before which to query.")
+    parser.add_argument("file_name", type=str, help="Name of opsim db file to write.")
+    parser.add_argument("token_file", type=str, help="files with USDF access token")
+    parser.add_argument(
+        "--site", type=str, default="usdf", help="site of consdb to query (usdf, usdf-dev, or summit)"
+    )
+    args = parser.parse_args() if len(cli_args) == 0 else parser.parse_args(cli_args)
+
+    dayobs = args.dayobs
+    file_name = args.file_name
+    token_file = args.token_file
+    site = args.site
+
+    visits = fetch_previous_sv_visits(dayobs, token_file, site=site)
+
+    with sqlite3.connect(file_name) as connection:
+        visits.to_sql("observations", connection, index=False)
+
+    return 0
+
+
 def make_sv_scheduler_cli(cli_args: list = []) -> int:
     parser = argparse.ArgumentParser(description="Create a pickle of an SV scheduler")
     parser.add_argument("file_name", type=str, help="Name of pickle file to write.")
     parser.add_argument("--opsim", type=str, default="", help="Name of opsim visits file to load.")
+    parser.add_argument(
+        "--config-script",
+        type=str,
+        default=CONFIG_SCRIPT_PATH,
+        help="Path to the config script for the scheduler.",
+    )
     args = parser.parse_args() if len(cli_args) == 0 else parser.parse_args(cli_args)
     opsim_fname = args.opsim
     scheduler_fname = args.file_name
+    scheduler_config_script = args.config_script
 
     # Set up the scheduler from the config file from ts_config_ocs.
-    nside, scheduler = fbs_config_sv_survey.get_scheduler()
+    nside, scheduler = get_scheduler_from_config(scheduler_config_script)
     print("NSIDE: ", nside)
 
     # Read opsim visits and add to the scheduler
@@ -398,6 +519,26 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
     parser.add_argument(
         "--no-downtime", action="store_true", dest="no_downtime", help="Include scheduled downtime"
     )
+    parser.add_argument("--keep_rewards", action="store_true", help="Compute rewards data.")
+    parser.add_argument(
+        "--archive", type=str, default="", help="URI of the archive in which to store the results"
+    )
+    parser.add_argument("--telescope", type=str, default="simonyi", help="The telescope simulated.")
+    parser.add_argument(
+        "--capture_env",
+        action="store_true",
+        help="Record the current environment as the simulation environment.",
+    )
+    parser.add_argument("--label", type=str, default="", help="The tags on the simulation.")
+    parser.add_argument("--delay", type=float, default=0.0, help="Minutes after nominal to start.")
+    parser.add_argument("--anom_overhead_scale", type=float, default=0.0, help="scale of scatter in the slew")
+    parser.add_argument(
+        "--anom_overhead_seed",
+        type=int,
+        default=1,
+        help="random number seed for anomalous scatter in overhead",
+    )
+    parser.add_argument("--tags", type=str, default=[], nargs="*", help="The tags on the simulation.")
     args = parser.parse_args() if len(cli_args) == 0 else parser.parse_args(cli_args)
 
     with open(args.scheduler, "rb") as sched_io:
@@ -417,18 +558,66 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
     run_name = args.run_name
     no_downtime = args.no_downtime
     nside = observatory.nside
+    archive_uri = args.archive
+    keep_rewards = args.keep_rewards
+    tags = args.tags
+    label = args.label
+    capture_env = args.capture_env
+    telescope = args.telescope
+    delay = args.delay
+    anom_overhead_scale = args.anom_overhead_scale
+    anom_overhead_seed = args.anom_overhead_seed
+
+    if anom_overhead_scale > 0:
+        anomalous_overhead_func = AnomalousOverheadFunc(anom_overhead_seed, anom_overhead_scale)
+    else:
+        anomalous_overhead_func = None
+
+    if keep_rewards:
+        scheduler.keep_rewards = keep_rewards
 
     survey_info = svs.survey_times(verbose=True, no_downtime=no_downtime, nside=nside)
 
-    run_sv_sim(
-        scheduler,
-        observatory,
-        survey_info,
-        initial_opsim,
-        day_obs,
-        sim_nights,
-        anomalous_overhead_func=None,
-        run_name=run_name,
-    )
+    if len(archive_uri) == 0:
+        run_sv_sim(
+            scheduler,
+            observatory,
+            survey_info,
+            initial_opsim,
+            day_obs,
+            sim_nights,
+            anomalous_overhead_func=anomalous_overhead_func,
+            run_name=run_name,
+            keep_rewards=keep_rewards,
+            delay=delay,
+        )
+    else:
+        LOGGER.info("Starting simulation")
+        observations, scheduler, observatory, rewards, obs_rewards, survey_info = _simple_run_sv_sim(
+            scheduler,
+            observatory,
+            survey_info,
+            day_obs,
+            sim_nights,
+            anomalous_overhead_func=anomalous_overhead_func,
+            keep_rewards=keep_rewards,
+            delay=delay,
+        )
+        LOGGER.info("Simualtion complete.")
+
+        data_path = make_sim_archive_dir(
+            observations,
+            rewards,
+            obs_rewards,
+            in_files={"scheduler": args.scheduler, "observatory": args.observatory},
+            tags=tags,
+            label=label,
+            capture_env=capture_env,
+            opsim_metadata={"telescope": telescope},
+        )
+        LOGGER.info(f"Created simulation archived directory: {data_path.name}")
+
+        sim_archive_uri = transfer_archive_dir(data_path.name, archive_uri)
+        LOGGER.info(f"Transferred {data_path} to {sim_archive_uri}")
 
     return 0
