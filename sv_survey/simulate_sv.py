@@ -42,6 +42,7 @@ __all__ = [
     "fetch_previous_sv_visits",
     "setup_sv",
     "run_sv_sim",
+    "simple_sv",
     "fetch_sv_visits_cli",
     "make_sv_scheduler_cli",
     "make_model_observatory_cli",
@@ -87,19 +88,24 @@ def fetch_previous_sv_visits(day_obs: int, tokenfile: str | None = None, site: s
         f"and v.observation_reason != 'field_survey_science')"
     )
     consdb_visits = consdb.query(query)
-    # augment visits adds many additional columns
-    consdb_visits = augment_visits(consdb_visits, instrument)
+    if len(consdb_visits) > 0:
+        # augment visits adds many additional columns
+        consdb_visits = augment_visits(consdb_visits, instrument)
 
-    # Convert consdb visits to opsim visits
-    initial_opsim = rn_sim.consdb_to_opsim(consdb_visits)
-    initial_opsim["note"] = initial_opsim["scheduler_note"].copy()
+        # Convert consdb visits to opsim visits
+        initial_opsim = rn_sim.consdb_to_opsim(consdb_visits)
+        initial_opsim["note"] = initial_opsim["scheduler_note"].copy()
+    else:
+        initial_opsim = None
     return initial_opsim
 
 
 def setup_sv(
     day_obs: int,
     no_downtime: bool = True,
-    filename: str | None = None,
+    clouds: bool = False,
+    seeing: float | None = None,
+    opsim_filename: str | None = None,
     tokenfile: str | None = None,
     site: str = "usdf",
 ) -> tuple:
@@ -114,9 +120,19 @@ def setup_sv(
     no_downtime
         If True, will not add any random downtime to the model observatory.
         If False, then random downtime (on the order of 50%) will be added.
-        For prenight simulations, this should be True.
+        For prenight simulations, this should probably True.
         For full SV simulations, this should be False.
-    filename
+    clouds
+        If True, will add cloud downtime to the model observatory.
+        If False, will not add cloud downtime and use 'ideal' clouds.
+        For prenight simulations, this should be False.
+        For full SV simulations, this should probably be True.
+    seeing
+        Set the seeing to a single value (float) or use seeing distribution
+        (if None). For full SV simulations, this should be None.
+        For prenight simulations - it depends. If we have an estimate
+        of the seeing expected for the night, it may be useful to set a value.
+    opsim_filename
         Get previous visits from a file, instead of directly from
         the ConsDB. If set, then consdb will not be queried.
     tokenfile
@@ -146,19 +162,20 @@ def setup_sv(
     survey_info.update(svc.survey_footprint(survey_start_mjd=survey_info["survey_start"].mjd, nside=nside))
 
     # Now that we have downtime, set up model observatory.
-    observatory = svs.setup_observatory_summit(survey_info)
+    observatory = svs.setup_observatory_summit(survey_info, seeing=seeing, clouds=clouds)
 
-    if filename is None:
+    if opsim_filename is None:
         # Fetch the initial opsim visits from the consdb.
         initial_opsim = fetch_previous_sv_visits(day_obs, tokenfile, site)
     else:
         # Read from the datafile `filename`.
-        con = sqlite3.connect(filename)
+        con = sqlite3.connect(opsim_filename)
         initial_opsim = pd.read_sql("select * from observations;", con)
 
     # Convert opsim visits to ObservationArray and feed the scheduler.
-    sch_obs = SchemaConverter().opsimdf2obs(initial_opsim)
-    scheduler.add_observations_array(sch_obs)
+    if initial_opsim is not None and len(initial_opsim) > 0:
+        sch_obs = SchemaConverter().opsimdf2obs(initial_opsim)
+        scheduler.add_observations_array(sch_obs)
 
     # We will NOT update the observatory to the state of the last visit.
     # If you wish to resume a simulation in the middle of the night,
@@ -366,10 +383,11 @@ def run_sv_sim(
     return visits, scheduler, observatory, rewards, obs_rewards, survey_info
 
 
-def sv_sim(
+def simple_sv(
     day_obs: int,
     tokenfile: str | None = None,
     site: str = "usdf",
+    clouds: bool = True,
 ) -> tuple[pd.DataFrame, dict]:
     """Run an updated SV simulation to end of SV period, starting at day_obs.
 
@@ -384,13 +402,15 @@ def sv_sim(
     site
         The site (`usdf`, `usdf-dev`, `summit` ..) location at
         which to query services. Must match tokenfile origin.
+    clouds
+        Add cloud weather to the simulation (True) or not (False).
 
     Returns
     -------
     visits, survey_info : `pd.DataFrame`, `dict`
     """
     scheduler, observatory, survey_info, initial_opsim = setup_sv(
-        day_obs, no_downtime=False, filename=None, tokenfile=tokenfile, site=site
+        day_obs, no_downtime=False, clouds=clouds, opsim_filename=None, tokenfile=tokenfile, site=site
     )
 
     visits, scheduler, observatory, rewards, obs_rewards, survey_info = run_sv_sim(
@@ -401,7 +421,7 @@ def sv_sim(
         day_obs,
         sim_nights=None,
         anomalous_overhead_func=None,
-        run_name=None,
+        run_name=f"sv_{day_obs}",
     )
 
     return visits, survey_info
