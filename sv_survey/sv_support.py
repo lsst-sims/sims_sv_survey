@@ -7,20 +7,17 @@ from astropy.time import Time
 
 astropy.utils.iers.conf.iers_degraded_accuracy = "ignore"
 
+import rubin_nights.dayobs_utils as rn_dayobs
+from rubin_nights import connections
+from rubin_nights.augment_visits import augment_visits
 from rubin_scheduler.scheduler.model_observatory import ModelObservatory, tma_movement
 from rubin_scheduler.scheduler.utils import (
     ObservationArray,
     SchemaConverter,
     run_info_table,
 )
-from rubin_scheduler.site_models import Almanac, ConstantSeeingData
+from rubin_scheduler.site_models import Almanac, ConstantSeeingData, SeeingModel
 from rubin_scheduler.utils import DEFAULT_NSIDE, Site
-from rubin_scheduler.site_models import SeeingModel
-
-from rubin_nights import connections
-from rubin_nights.augment_visits import augment_visits
-import rubin_nights.dayobs_utils as rn_dayobs
-
 
 __all__ = [
     "survey_times",
@@ -40,6 +37,8 @@ def survey_times(
     visits: pd.DataFrame | None = None,
     day_obs: int | None = None,
     nside: int = DEFAULT_NSIDE,
+    tokenfile: str | None = None,
+    site: str = "usdf",
 ) -> dict:
     """Set up basic SV survey conditions.
 
@@ -75,6 +74,13 @@ def survey_times(
     nside
         Should be set from the scheduler configuration, but will use
         default value otherwise. Is used for ModelObservatory setup.
+    tokenfile
+        Path to the RSP tokenfile.
+        See also `rubin_nights.connections.get_access_token`.
+        Default None will use `ACCESS_TOKEN` environment variable.
+    site
+        The site (`usdf`, `usdf-dev`, `summit` ..) location at
+        which to query services. Must match tokenfile origin.
 
     Returns
     -------
@@ -96,7 +102,7 @@ def survey_times(
         print("Survey end", survey_end.isot)
         print("for a survey length of (nights)", survey_length)
 
-    site = Site("LSST")
+    lsst_site = Site("LSST")
     almanac = Almanac(mjd_start=survey_start.mjd)
     alm_start = np.where(abs(almanac.sunsets["sunset"] - survey_start.mjd) < 0.5)[0][0]
     alm_end = np.where(abs(almanac.sunsets["sunset"] - survey_end.mjd) < 0.5)[0][0]
@@ -123,7 +129,7 @@ def survey_times(
         "moonsets": moon_set,
         "moonrises": moon_rise,
         "moon_illum": moon_illum,
-        "site": site,
+        "site": lsst_site,
         "nside": nside,
         "early_dome_closure": early_dome_closure,
     }
@@ -155,13 +161,21 @@ def survey_times(
         # Take complete night for aos
         aos_test_start_total = Time("2025-08-27T12:00:00", scale="utc", format="isot")
         aos_test_end_total = Time("2025-08-28T12:00:00", scale="utc", format="isot")
-        # Take 4-5 hours per night for aos test
-        aos_test_start = Time("2025-08-28T12:00:00", scale='utc', format='isot')
-        aos_test_end = Time("2025-09-06T12:00:00", scale='utc', format='isot')
+        # Take some hours per night for aos test
+        aos_hours_min = 4
+        aos_hours_max = 7
+        aos_test_start = Time("2025-08-28T12:00:00", scale="utc", format="isot")
+        aos_test_end = Time("2025-09-06T12:00:00", scale="utc", format="isot")
 
         # More weather
-        weather_starts = [Time("2025-09-12T12:00:00", scale='utc'),]
-        weather_ends = [Time("2025-09-14T12:00:00", scale='utc'),]
+        weather_starts = [
+            Time("2025-08-29T12:00:00", scale="utc"),
+            Time("2025-09-12T12:00:00", scale="utc"),
+        ]
+        weather_ends = [
+            Time("2025-09-01T12:00:00", scale="utc"),
+            Time("2025-09-14T12:00:00", scale="utc"),
+        ]
 
         rng = np.random.default_rng(seed=random_seed)
 
@@ -206,10 +220,10 @@ def survey_times(
             time_down = rng.gumbel(loc=0.4, scale=1, size=len(match))  # in hours
             # apply probability of having downtime or not -
             # But always at least 2 minutes
-            time_down = np.where(prob_down <= threshold, time_down, 2/60/24)
+            time_down = np.where(prob_down <= threshold, time_down, 2 / 60 / 24)
             avail_in_night = (night_end[match] - night_start[match]) * 24
             time_down = np.where(time_down >= avail_in_night, avail_in_night, time_down)
-            time_down = np.where(time_down <= 0, 3/60/24, time_down)
+            time_down = np.where(time_down <= 0, 3 / 60 / 24, time_down)
             d_starts = rng.uniform(low=night_start[match], high=night_end[match] - time_down / 24)
             d_ends = d_starts + time_down / 24.0
             random_downtime += ((d_ends - d_starts) * 24).sum()
@@ -227,20 +241,20 @@ def survey_times(
 
         # Remove whole nights days for AOS test
         # (this would work to just use start/end, but plot later is not good)
-        d_starts = np.arange(aos_test_start_total.mjd, aos_test_end_total.mjd-1, 1)
+        d_starts = np.arange(aos_test_start_total.mjd, aos_test_end_total.mjd - 1, 1)
         d_ends = np.arange(aos_test_start_total.mjd + 1, aos_test_end_total.mjd, 1)
         down_starts = np.concatenate([down_starts, d_starts])
         down_ends = np.concatenate([down_ends, d_ends])
-        # And add 4-5 hours per night during AOS test
+        # And add aos hours per night during AOS test
         match = np.where((night_start >= aos_test_start.mjd) & (night_end <= (aos_test_end.mjd + 1)))[0]
-        aos_time_test = rng.uniform(low=4, high=5, size=len(match))/24
-        aos_time_start = rng.uniform(low=night_start[match]+0.5/24, high=night_end[match] - aos_time_test)
+        aos_time_test = rng.uniform(low=aos_hours_min, high=aos_hours_max, size=len(match)) / 24
+        aos_time_start = rng.uniform(low=night_start[match] + 0.5 / 24, high=night_end[match] - aos_time_test)
         d_starts = aos_time_start
         d_ends = aos_time_start + aos_time_test
         down_starts = np.concatenate([down_starts, d_starts])
         down_ends = np.concatenate([down_ends, d_ends])
 
-        # Remove additional whole nights for weather
+        # Remove some additional whole nights for weather
         for ws, we in zip(weather_starts, weather_ends):
             d_starts = np.arange(ws.mjd, we.mjd - 1, 1)
             d_ends = np.arange(ws.mjd + 1, we.mjd, 1)
@@ -273,25 +287,30 @@ def survey_times(
             day_obs = rn_dayobs.day_obs_str_to_int(rn_dayobs.time_to_day_obs(Time.now()))
         day_obs_mjd = rn_dayobs.day_obs_to_time(day_obs).mjd
         if visits is None:
-            endpoints = connections.get_clients("/Users/lynnej/.lsst/usdf_rsp")
+            # Fetch the visits if not already provided
+            endpoints = connections.get_clients(tokenfile, site)
             query = (
                 "select *, q.* from cdb_lsstcam.visit1 left join cdb_lsstcam.visit1_quicklook as q "
                 "on visit1.visit_id = q.visit_id "
                 "where science_program = 'BLOCK-365' and observation_reason != 'block-t548' and "
                 f"observation_reason != 'field_survey_science' and visit1.day_obs < {day_obs}"
             )
-            visits = endpoints['consdb'].query(query)
+            visits = endpoints["consdb"].query(query)
             visits = augment_visits(visits, "lsstcam")
 
-        survey_info['consdb_visits'] = visits
+        survey_info["consdb_visits"] = visits
 
         # Identify gaps/downtime starts
-        edges = np.where(np.diff(visits.obs_start_mjd.values) > 250 / 60 / 60 / 24)[0]
-        dropout_starts = visits.iloc[edges]['obs_end_mjd'].values
-        dropout_ends = visits.iloc[edges + 1]['obs_start_mjd'].values - 150 / 60 / 60 / 24
+        if "obs_start_mjd" in visits.columns:
+            obs_start_mjd_key = "obs_start_mjd"
+        else:
+            obs_start_mjd_key = "observationStartMJD"
+        edges = np.where(np.diff(visits[obs_start_mjd_key].values) > 250 / 60 / 60 / 24)[0]
+        dropout_starts = visits.iloc[edges]["obs_end_mjd"].values
+        dropout_ends = visits.iloc[edges + 1][obs_start_mjd_key].values - 150 / 60 / 60 / 24
 
         dropout_starts = np.concatenate([dropout_starts, np.array([visits.obs_end_mjd.max()])])
-        dropout_ends = np.concatenate([dropout_ends, np.array([day_obs_mjd-0.001])])
+        dropout_ends = np.concatenate([dropout_ends, np.array([day_obs_mjd - 0.001])])
 
         dayobsmjd = np.arange(survey_start.mjd, survey_start.mjd + survey_length, 1)
         d_starts = []
@@ -372,10 +391,10 @@ def survey_times(
     for start, end in zip(downtimes["start"], downtimes["end"]):
         idx = np.where((start > dayobsmjd) & (end < dayobsmjd + 1))
         if len(idx[0]) == 0:
-            print(start, end, Time(start, format='mjd').iso, Time(end, format='mjd').iso)
+            print(start, end, Time(start, format="mjd").iso, Time(end, format="mjd").iso)
             continue
         if len(idx[0]) > 1:
-            print(start, end, Time(start, format='mjd').iso, Time(end, format='mjd').iso)
+            print(start, end, Time(start, format="mjd").iso, Time(end, format="mjd").iso)
             print(idx, dayobsmjd[idx], sunsets[idx], sunrises[idx])
         if start < sunsets[idx]:
             dstart = sunsets[idx]
@@ -393,7 +412,9 @@ def survey_times(
     survey_info["hours_in_night"] = hours_in_night
     survey_info["downtime_per_night"] = downtime_per_night
     survey_info["avail_per_night"] = hours_in_night - downtime_per_night
-    survey_info["system_availability"] = np.nanmean(survey_info["avail_per_night"] / survey_info["hours_in_night"])
+    survey_info["system_availability"] = np.nanmean(
+        survey_info["avail_per_night"] / survey_info["hours_in_night"]
+    )
     if verbose:
         print(f"Max length of night {hours_in_night.max()} min length of night {hours_in_night.min()}")
         print(
@@ -448,8 +469,9 @@ def lst_over_survey_time(survey_info: dict) -> None:
     print("lst sunset @ mid", sunset_mid_lst.deg, "lst sunrise @ mid", sunrise_mid_lst.deg)
 
 
-def setup_observatory_summit(survey_info: dict, seeing: float | None = None,
-                             clouds:  bool = False) -> ModelObservatory:
+def setup_observatory_summit(
+    survey_info: dict, seeing: float | None = None, clouds: bool = False
+) -> ModelObservatory:
     """Configure a `summit-10` model observatory.
     This approximates average summit performance at present.
 

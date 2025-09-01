@@ -18,7 +18,7 @@ from rubin_nights import connections
 from rubin_nights.augment_visits import augment_visits
 from rubin_scheduler.scheduler import sim_runner
 from rubin_scheduler.scheduler.model_observatory import ModelObservatory
-from rubin_scheduler.scheduler.schedulers import CoreScheduler, SimpleBandSched
+from rubin_scheduler.scheduler.schedulers import CoreScheduler, DateSwapBandScheduler
 from rubin_scheduler.scheduler.utils import (
     SchemaConverter,
 )
@@ -31,7 +31,7 @@ from . import sv_support as svs
 
 CONFIG_SCRIPT_PATH = "fbs_config_sv_survey.py"
 
-# For backwards compatibility
+# For backwards compatibility to run without setting this explicitly
 if getpass.getuser() == "lynnej":
     LYNNES_DIR = "/Users/lynnej/lsst_repos/ts_config_ocs/Scheduler/feature_scheduler/maintel/"
     CONFIG_SCRIPT_PATH = "/".join([LYNNES_DIR, CONFIG_SCRIPT_PATH])
@@ -40,6 +40,8 @@ LOGGER = logging.getLogger(__name__)
 
 __all__ = [
     "fetch_previous_sv_visits",
+    "setup_scheduler",
+    "setup_observatory",
     "setup_sv",
     "run_sv_sim",
     "simple_sv",
@@ -91,7 +93,6 @@ def fetch_previous_sv_visits(day_obs: int, tokenfile: str | None = None, site: s
     if len(consdb_visits) > 0:
         # augment visits adds many additional columns
         consdb_visits = augment_visits(consdb_visits, instrument)
-
         # Convert consdb visits to opsim visits
         initial_opsim = rn_sim.consdb_to_opsim(consdb_visits)
         initial_opsim["note"] = initial_opsim["scheduler_note"].copy()
@@ -100,7 +101,134 @@ def fetch_previous_sv_visits(day_obs: int, tokenfile: str | None = None, site: s
     return initial_opsim
 
 
+def setup_scheduler(
+    config_script_path: str,
+    day_obs: int,
+    opsim_filename: str | None = None,
+    tokenfile: str | None = None,
+    site: str = "usdf",
+    initial_opsim: pd.DataFrame | None = None,
+) -> tuple[CoreScheduler, pd.DataFrame, int]:
+    """Set up the SV survey scheduler.
+     Read previous SV visits into scheduler for startup.
+
+    Parameters
+    ----------
+    config_script_path
+        The path to the scheduler configuration file.
+    day_obs
+        The day_obs (integer) of the day on which to start the simulation.
+        Will fetch all SV visits *up to* this day_obs.
+        If initial_opsim is passed, this can be ignored.
+    opsim_filename
+        Get previous visits from a file, instead of directly from
+        the ConsDB. If set, then consdb will not be queried.
+    tokenfile
+        Path to the RSP tokenfile.
+        See also `rubin_nights.connections.get_access_token`.
+        Default None will use `ACCESS_TOKEN` environment variable.
+    site
+        The site (`usdf`, `usdf-dev`, `summit` ..) location at
+        which to query services. Must match tokenfile origin.
+    initial_opsim
+        If initial_opsim is not None, use this dataframe instead of fetching or
+        reading from disk. These should be *opsim* formatted visits.
+        This will basically ignore all other kwargs.
+
+    Returns
+    -------
+    scheduler : `CoreScheduler`
+    initial_opsim : `pd.DataFrame`
+    nside : `int`
+    """
+    # Set up the scheduler from the config file from ts_config_ocs.
+    nside, scheduler = get_scheduler_from_config(config_script_path)
+    if initial_opsim is None:
+        if opsim_filename is None:
+            # Fetch the initial opsim visits from the consdb.
+            initial_opsim = fetch_previous_sv_visits(day_obs, tokenfile, site)
+        else:
+            # Read from the datafile `filename`.
+            con = sqlite3.connect(opsim_filename)
+            initial_opsim = pd.read_sql("select * from observations;", con)
+
+    # Convert opsim visits to ObservationArray and feed the scheduler.
+    if initial_opsim is not None and len(initial_opsim) > 0:
+        sch_obs = SchemaConverter().opsimdf2obs(initial_opsim)
+        scheduler.add_observations_array(sch_obs)
+
+    return scheduler, initial_opsim, nside
+
+
+def setup_observatory(
+    nside: int,
+    no_downtime: bool = True,
+    clouds: bool = False,
+    seeing: float | None = None,
+    real_downtime: bool = False,
+    initial_opsim: pd.DataFrame | None = None,
+) -> tuple[ModelObservatory, dict]:
+    """Set up the model observatory.
+
+    Parameters
+    ----------
+    no_downtime
+        If True, will not add any random downtime to the model observatory.
+        If False, then random downtime (on the order of 50%) will be added.
+        For prenight simulations, this should probably True.
+        For full SV simulations, this should be False.
+    clouds
+        If True, will add cloud downtime to the model observatory.
+        If False, will not add cloud downtime and use 'ideal' clouds.
+        For prenight simulations, this should be False.
+        For full SV simulations, this should probably be True.
+    seeing
+        Set the seeing to a single value (float) or use seeing distribution
+        (if None). For full SV simulations, this should be None.
+        For prenight simulations - it depends. If we have an estimate
+        of the seeing expected for the night, it may be useful to set a value.
+    opsim_filename
+        Get previous visits from a file, instead of directly from
+        the ConsDB. If set, then consdb will not be queried.
+    tokenfile
+        Path to the RSP tokenfile.
+        See also `rubin_nights.connections.get_access_token`.
+        Default None will use `ACCESS_TOKEN` environment variable.
+    site
+        The site (`usdf`, `usdf-dev`, `summit` ..) location at
+        which to query services. Must match tokenfile origin.
+    real_downtime
+        A boolean flag to determine whether to rewrite the downtime
+        within the range of initial_opsim into the actual uptime for visits
+        or not. If True, initial_opsim must not be None.
+    initial_opsim
+        If initial_opsim is not None, use these visits instead of fetching or
+        reading from disk. These should be *opsim* formatted visits.
+
+    Returns
+    -------
+    observatory : `ModelObservatory`
+    survey_info : `dict`
+    """
+    # Find the survey information - survey start, downtime simulation ..
+    if real_downtime:
+        if initial_opsim is None:
+            raise ValueError("If real_downtime is True, initial_opsim must be provided.")
+        survey_info = svs.survey_times(
+            verbose=True, no_downtime=no_downtime, nside=nside, real_downtime=True, visits=initial_opsim
+        )
+
+    # This isn't strictly necessary for survey_info but adds useful
+    # potential footprint information for plotting purposes
+    survey_info.update(svc.survey_footprint(survey_start_mjd=survey_info["survey_start"].mjd, nside=nside))
+
+    # Now that we have downtime, set up model observatory.
+    observatory = svs.setup_observatory_summit(survey_info, seeing=seeing, clouds=clouds)
+    return observatory, survey_info
+
+
 def setup_sv(
+    config_script_path: str,
     day_obs: int,
     no_downtime: bool = True,
     clouds: bool = False,
@@ -114,6 +242,8 @@ def setup_sv(
 
     Parameters
     ----------
+    config_script_path
+        The path to the ts_config_ocs file that defines the scheduler.
     day_obs
         The day_obs (integer) of the day on which to start the simulation.
         Will fetch all SV visits *up to* this day_obs.
@@ -151,38 +281,23 @@ def setup_sv(
     initial_opsim : `pd.DataFrame`
     """
 
-    # Set up the scheduler from the config file from ts_config_ocs.
-    nside, scheduler = get_scheduler_from_config(CONFIG_SCRIPT_PATH)
+    scheduler, initial_opsim, nside = setup_scheduler(
+        config_script_path=config_script_path,
+        day_obs=day_obs,
+        opsim_filename=opsim_filename,
+        tokenfile=tokenfile,
+        site=site,
+    )
 
-    # Find the survey information - survey start, downtime simulation ..
-    survey_info = svs.survey_times(verbose=True, no_downtime=no_downtime, nside=nside)
+    observatory, survey_info = setup_observatory(
+        nside,
+        no_downtime=no_downtime,
+        clouds=clouds,
+        seeing=seeing,
+        real_downtime=True,
+        initial_opsim=initial_opsim,
+    )
 
-    # This isn't strictly necessary for survey_info but adds useful
-    # potential footprint information for plotting purposes
-    survey_info.update(svc.survey_footprint(survey_start_mjd=survey_info["survey_start"].mjd, nside=nside))
-
-    # Now that we have downtime, set up model observatory.
-    observatory = svs.setup_observatory_summit(survey_info, seeing=seeing, clouds=clouds)
-
-    if opsim_filename is None:
-        # Fetch the initial opsim visits from the consdb.
-        initial_opsim = fetch_previous_sv_visits(day_obs, tokenfile, site)
-    else:
-        # Read from the datafile `filename`.
-        con = sqlite3.connect(opsim_filename)
-        initial_opsim = pd.read_sql("select * from observations;", con)
-
-    # Convert opsim visits to ObservationArray and feed the scheduler.
-    if initial_opsim is not None and len(initial_opsim) > 0:
-        sch_obs = SchemaConverter().opsimdf2obs(initial_opsim)
-        scheduler.add_observations_array(sch_obs)
-
-    # We will NOT update the observatory to the state of the last visit.
-    # If you wish to resume a simulation in the middle of the night,
-    # please look at rubin_scheduler.scheduler.utils.restore_scheduler
-
-    # Return initial_opsim instead of sch_obs, because initial_opsim
-    # easier to work with, plus retains extra information from the ConsDB.
     return scheduler, observatory, survey_info, initial_opsim
 
 
@@ -238,9 +353,10 @@ def _simple_run_sv_sim(
     maintenance schedule somehow.).
     """
 
-    # Set up the filter scheduler (we should check this against reality)
-    # This simple and scheduler just changes based on lunar phase.
-    band_scheduler = SimpleBandSched(illum_limit=40)
+    # Set up the filter scheduler - there should probably be an argument
+    # here about what the updated band swap schedule is, but this will work
+    # for now.
+    band_scheduler = DateSwapBandScheduler()
 
     # Start at dayobs sunset minus a tiny bit of time
     # (ensure band scheduler changes if needed and that we start on time)
@@ -410,7 +526,13 @@ def simple_sv(
     visits, survey_info : `pd.DataFrame`, `dict`
     """
     scheduler, observatory, survey_info, initial_opsim = setup_sv(
-        day_obs, no_downtime=False, clouds=clouds, opsim_filename=None, tokenfile=tokenfile, site=site
+        config_script_path=CONFIG_SCRIPT_PATH,
+        day_obs=day_obs,
+        no_downtime=False,
+        clouds=clouds,
+        opsim_filename=None,
+        tokenfile=tokenfile,
+        site=site,
     )
 
     visits, scheduler, observatory, rewards, obs_rewards, survey_info = run_sv_sim(
@@ -465,14 +587,11 @@ def make_sv_scheduler_cli(cli_args: list = []) -> int:
     scheduler_fname = args.file_name
     scheduler_config_script = args.config_script
 
-    # Set up the scheduler from the config file from ts_config_ocs.
-    nside, scheduler = get_scheduler_from_config(scheduler_config_script)
-    print("NSIDE: ", nside)
+    scheduler, initial_opsim, nside = setup_scheduler(
+        scheduler_config_script, day_obs=0, opsim_filename=opsim_fname
+    )
 
-    # Read opsim visits and add to the scheduler
-    if len(opsim_fname) > 0:
-        obs = SchemaConverter().opsim2obs(opsim_fname)
-        scheduler.add_observations_array(obs)
+    print("NSIDE: ", nside)
 
     # Save to a pickle
     with open(scheduler_fname, "wb") as sched_io:
@@ -490,20 +609,19 @@ def make_model_observatory_cli(cli_args: list = []) -> int:
     )
     parser.add_argument("--seeing", type=float, default=0, help="Seeing to use")
     args = parser.parse_args() if len(cli_args) == 0 else parser.parse_args(cli_args)
+
     observatory_fname = args.file_name
     nside = args.nside
     no_downtime = args.no_downtime
     seeing = None if args.seeing == 0 else args.seeing
 
-    # Find the survey information - survey start, downtime simulation ..
-    survey_info = svs.survey_times(verbose=True, no_downtime=no_downtime, nside=nside)
-
-    # This isn't strictly necessary for survey_info but adds useful
-    # potential footprint information for plotting purposes
-    survey_info.update(svc.survey_footprint(survey_start_mjd=survey_info["survey_start"].mjd, nside=nside))
-
-    # Now that we have downtime, set up model observatory.
-    observatory = svs.setup_observatory_summit(survey_info, seeing=seeing)
+    observatory, survey_info = setup_observatory(
+        nside,
+        no_downtime=no_downtime,
+        clouds=False,
+        seeing=seeing,
+        real_downtime=False,
+    )
 
     # Save to a pickle
     with open(observatory_fname, "wb") as observatory_io:
@@ -520,7 +638,7 @@ def make_band_scheduler_cli(cli_args: list = []) -> int:
     file_name = args.file_name
     illum_limit = args.illum_limit
 
-    band_scheduler = SimpleBandSched(illum_limit=illum_limit)
+    band_scheduler = DateSwapBandScheduler()
 
     with open(file_name, "wb") as bs_io:
         pickle.dump(band_scheduler, bs_io)
