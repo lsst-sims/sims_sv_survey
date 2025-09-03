@@ -165,7 +165,7 @@ def survey_times(
         aos_hours_min = 4
         aos_hours_max = 7
         aos_test_start = Time("2025-08-28T12:00:00", scale="utc", format="isot")
-        aos_test_end = Time("2025-09-06T12:00:00", scale="utc", format="isot")
+        aos_test_end = Time("2025-09-11T12:00:00", scale="utc", format="isot")
 
         # More weather
         weather_starts = [
