@@ -214,9 +214,10 @@ def setup_observatory(
     if real_downtime:
         if initial_opsim is None:
             raise ValueError("If real_downtime is True, initial_opsim must be provided.")
-        survey_info = svs.survey_times(
-            verbose=True, no_downtime=no_downtime, nside=nside, real_downtime=True, visits=initial_opsim
-        )
+
+    survey_info = svs.survey_times(
+        verbose=True, no_downtime=no_downtime, nside=nside, real_downtime=real_downtime, visits=initial_opsim
+    )
 
     # This isn't strictly necessary for survey_info but adds useful
     # potential footprint information for plotting purposes
