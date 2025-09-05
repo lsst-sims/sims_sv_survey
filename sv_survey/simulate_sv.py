@@ -746,8 +746,8 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
 
         data_path = make_sim_archive_dir(
             observations,
-            rewards,
-            obs_rewards,
+            rewards if keep_rewards else None,
+            obs_rewards if keep_rewards else None,
             in_files={"scheduler": args.scheduler, "observatory": args.observatory},
             tags=tags,
             label=label,
