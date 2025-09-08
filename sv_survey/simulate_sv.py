@@ -552,7 +552,7 @@ def simple_sv(
 
 def fetch_sv_visits_cli(cli_args: list = []) -> int:
     parser = argparse.ArgumentParser(description="Query the consdb for completed sv visits")
-    parser.add_argument("dayobs", type=int, help="Dayobs before which to query.")
+    parser.add_argument("day_obs", type=int, help="Day_obs before which to query.")
     parser.add_argument("file_name", type=str, help="Name of opsim db file to write.")
     parser.add_argument("token_file", type=str, help="files with USDF access token")
     parser.add_argument(
@@ -560,12 +560,12 @@ def fetch_sv_visits_cli(cli_args: list = []) -> int:
     )
     args = parser.parse_args() if len(cli_args) == 0 else parser.parse_args(cli_args)
 
-    dayobs = args.dayobs
+    day_obs = args.day_obs
     file_name = args.file_name
     token_file = args.token_file
     site = args.site
 
-    visits = fetch_previous_sv_visits(dayobs, token_file, site=site)
+    visits = fetch_previous_sv_visits(day_obs, token_file, site=site)
 
     with sqlite3.connect(file_name) as connection:
         visits.to_sql("observations", connection, index=False)
@@ -606,14 +606,17 @@ def make_model_observatory_cli(cli_args: list = []) -> int:
     parser.add_argument("file_name", type=str, help="Name of pickle file to write.")
     parser.add_argument("--nside", type=int, default=32, help="nside for the model observatory.")
     parser.add_argument(
-        "--no-downtime", action="store_true", dest="no_downtime", help="Include scheduled downtime"
+        "--include-downtime", action="store_true", dest="include_downtime", help="Include scheduled downtime"
     )
     parser.add_argument("--seeing", type=float, default=0, help="Seeing to use")
     args = parser.parse_args() if len(cli_args) == 0 else parser.parse_args(cli_args)
 
     observatory_fname = args.file_name
     nside = args.nside
-    no_downtime = args.no_downtime
+    if args.include_downtime:
+        no_downtime = False
+    else:
+        no_downtime = True
     seeing = None if args.seeing == 0 else args.seeing
 
     observatory, survey_info = setup_observatory(
@@ -634,10 +637,8 @@ def make_model_observatory_cli(cli_args: list = []) -> int:
 def make_band_scheduler_cli(cli_args: list = []) -> int:
     parser = argparse.ArgumentParser(description="Create a pickle of a band scheduler")
     parser.add_argument("file_name", type=str, help="Name of pickle file to write.")
-    parser.add_argument("--illum_limit", type=float, default=40, help="Illumination limit.")
     args = parser.parse_args() if len(cli_args) == 0 else parser.parse_args(cli_args)
     file_name = args.file_name
-    illum_limit = args.illum_limit
 
     band_scheduler = DateSwapBandScheduler()
 
@@ -655,9 +656,6 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
     parser.add_argument("day_obs", type=int, help="start day obs.")
     parser.add_argument("sim_nights", type=int, help="number of nights to run.")
     parser.add_argument("run_name", type=str, help="Run (also db output) name.")
-    parser.add_argument(
-        "--no-downtime", action="store_true", dest="no_downtime", help="Include scheduled downtime"
-    )
     parser.add_argument("--keep_rewards", action="store_true", help="Compute rewards data.")
     parser.add_argument(
         "--archive", type=str, default="", help="URI of the archive in which to store the results"
@@ -695,7 +693,6 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
     day_obs = args.day_obs
     sim_nights = args.sim_nights
     run_name = args.run_name
-    no_downtime = args.no_downtime
     nside = observatory.nside
     archive_uri = args.archive
     keep_rewards = args.keep_rewards
@@ -715,7 +712,7 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
     if keep_rewards:
         scheduler.keep_rewards = keep_rewards
 
-    survey_info = svs.survey_times(verbose=True, no_downtime=no_downtime, nside=nside)
+    survey_info = svs.survey_times(verbose=True, no_downtime=True, nside=nside)
 
     if len(archive_uri) == 0:
         run_sv_sim(
@@ -742,7 +739,7 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
             keep_rewards=keep_rewards,
             delay=delay,
         )
-        LOGGER.info("Simualtion complete.")
+        LOGGER.info("Simulation complete.")
 
         data_path = make_sim_archive_dir(
             observations,
