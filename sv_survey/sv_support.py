@@ -5,12 +5,10 @@ import numpy as np
 import pandas as pd
 from astropy.time import Time
 
-astropy.utils.iers.conf.iers_degraded_accuracy = "ignore"
-
 import rubin_nights.dayobs_utils as rn_dayobs
 from rubin_nights import connections
 from rubin_nights.augment_visits import augment_visits
-from rubin_scheduler.scheduler.model_observatory import ModelObservatory, tma_movement
+from rubin_scheduler.scheduler.model_observatory import ModelObservatory
 from rubin_scheduler.scheduler.utils import (
     ObservationArray,
     SchemaConverter,
@@ -27,6 +25,7 @@ __all__ = [
     "save_opsim",
 ]
 
+astropy.utils.iers.conf.iers_degraded_accuracy = "ignore"
 
 def survey_times(
     verbose: bool = True,
@@ -153,8 +152,6 @@ def survey_times(
         # 2 hours per night for SV survey from June 15 - July 1
         # choose best time (moon down)
         survey_transition = Time("2025-07-01T12:00:00", format="isot", scale="utc")
-        alm_transition = np.where(abs(almanac.sunsets["sunset"] - survey_transition.mjd) < 0.5)[0][0]
-        transition_offset = alm_transition - alm_start
         # whole night from July 1 - September 15 with random downtime
         # 50% downtime ?
         # Added as of 20250730
@@ -181,7 +178,8 @@ def survey_times(
 
         night_start = sunsets
         night_end = actual_sunrises - early_dome_closure / 24.0
-        # Almanac always counts moon rise and set in the current night, after sunset
+        # Almanac always counts moon rise and set in the current night,
+        # after sunset
         # dark ends with either sunrise or moonrise
         dark_end = np.where(moon_rise < night_end, moon_rise, night_end)
         # dark starts with either sunset or moonset
@@ -217,7 +215,7 @@ def survey_times(
         for count in range(5):
             threshold = 1.0 - (count / 5)
             prob_down = rng.random(len(match))
-            time_down = rng.gumbel(loc=0.4, scale=1, size=len(match))  # in hours
+            time_down = rng.gumbel(loc=0.4, scale=1, size=len(match))  # hours
             # apply probability of having downtime or not -
             # But always at least 2 minutes
             time_down = np.where(prob_down <= threshold, time_down, 2 / 60 / 24)
@@ -364,7 +362,7 @@ def survey_times(
             downtime_ends.append(de)
 
     # Turn into an array of downtimes for sim_runner
-    # down_starts/ down_ends should be mjd times for internal-ModelObservatory use
+    # down_starts/ down_ends should be mjd times for ModelObservatory
     downtimes = np.array(
         list(zip(downtime_starts, downtime_ends)),
         dtype=list(zip(["start", "end"], [float, float])),
@@ -478,7 +476,9 @@ def setup_observatory_summit(
     Parameters
     ----------
     survey_info
-        The survey_info dictionary returned by `survey_times`
+        The survey_info dictionary returned by `survey_times`.
+        Note that the survey_info carries the downtime information,
+        as well as the survey_start information.
     seeing
         If specified (as a float), then the constant seeing model will be
         used, delivering atmospheric seeing with `seeing` arcsecond values.
@@ -489,6 +489,8 @@ def setup_observatory_summit(
     Returns
     -------
     model_observatory
+        ModelObservatory complete with seeing model, cloud (weather downtime)
+        model, and also downtimes (due to engineering).
     """
     if seeing is not None:
         seeing_data = ConstantSeeingData()

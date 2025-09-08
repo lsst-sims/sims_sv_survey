@@ -32,11 +32,11 @@ class TestSVCLI(unittest.TestCase):
     #    @unittest.skip("redundant")
     def test_make_sv_scheduler_cli(self) -> None:
         with temp_cwd():
-            sceduler_pickle = "scheduler.p"
-            return_status = simulate_sv.make_sv_scheduler_cli([sceduler_pickle])
+            scheduler_pickle = "scheduler.p"
+            return_status = simulate_sv.make_sv_scheduler_cli([scheduler_pickle])
             assert return_status == 0
 
-            with open(sceduler_pickle, "rb") as pickle_io:
+            with open(scheduler_pickle, "rb") as pickle_io:
                 scheduler = pickle.load(pickle_io)
 
             assert isinstance(scheduler, CoreScheduler)
