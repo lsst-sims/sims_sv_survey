@@ -14,6 +14,7 @@ import rubin_nights.dayobs_utils as rn_dayobs
 import rubin_nights.rubin_sim_addons as rn_sim
 from astroplan import Observer
 from astropy.time import Time, TimeDelta
+from lsst.resources import ResourcePath
 from rubin_nights import connections
 from rubin_nights.augment_visits import augment_visits
 from rubin_scheduler.scheduler import sim_runner
@@ -676,6 +677,7 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
         help="random number seed for anomalous scatter in overhead",
     )
     parser.add_argument("--tags", type=str, default=[], nargs="*", help="The tags on the simulation.")
+    parser.add_argument("--results", type='str', default='', help="Results directory.")
     args = parser.parse_args() if len(cli_args) == 0 else parser.parse_args(cli_args)
 
     with open(args.scheduler, "rb") as sched_io:
@@ -703,6 +705,7 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
     delay = args.delay
     anom_overhead_scale = args.anom_overhead_scale
     anom_overhead_seed = args.anom_overhead_seed
+    results_dir = args.results if len(args.results)>0 else None
 
     if anom_overhead_scale > 0:
         anomalous_overhead_func = AnomalousOverheadFunc(anom_overhead_seed, anom_overhead_scale)
@@ -714,7 +717,7 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
 
     survey_info = svs.survey_times(verbose=True, no_downtime=True, nside=nside)
 
-    if len(archive_uri) == 0:
+    if len(archive_uri) == 0 and results_dir is None:
         run_sv_sim(
             scheduler,
             observatory,
@@ -750,10 +753,12 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
             label=label,
             capture_env=capture_env,
             opsim_metadata={"telescope": telescope},
+            data_dir=results_dir,
         )
-        LOGGER.info(f"Created simulation archived directory: {data_path.name}")
+        LOGGER.info(f"Wrote results in directory: {data_path.name}")
 
-        sim_archive_uri = transfer_archive_dir(data_path.name, archive_uri)
-        LOGGER.info(f"Transferred {data_path} to {sim_archive_uri}")
+        if len(archive_uri) == 0:
+            sim_archive_uri = transfer_archive_dir(data_path.name, archive_uri)
+            LOGGER.info(f"Transferred {data_path} to {sim_archive_uri}")
 
     return 0
