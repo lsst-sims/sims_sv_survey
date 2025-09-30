@@ -677,7 +677,7 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
         help="random number seed for anomalous scatter in overhead",
     )
     parser.add_argument("--tags", type=str, default=[], nargs="*", help="The tags on the simulation.")
-    parser.add_argument("--results", type='str', default='', help="Results directory.")
+    parser.add_argument("--results", type=str, default='', help="Results directory.")
     args = parser.parse_args() if len(cli_args) == 0 else parser.parse_args(cli_args)
 
     with open(args.scheduler, "rb") as sched_io:
@@ -753,7 +753,7 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
             label=label,
             capture_env=capture_env,
             opsim_metadata={"telescope": telescope},
-            data_dir=results_dir,
+            data_path=results_dir,
         )
         LOGGER.info(f"Wrote results in directory: {data_path.name}")
 
