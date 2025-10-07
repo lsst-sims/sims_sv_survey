@@ -662,11 +662,6 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
         "--archive", type=str, default="", help="URI of the archive in which to store the results"
     )
     parser.add_argument("--telescope", type=str, default="simonyi", help="The telescope simulated.")
-    parser.add_argument(
-        "--capture_env",
-        action="store_true",
-        help="Record the current environment as the simulation environment.",
-    )
     parser.add_argument("--label", type=str, default="", help="The tags on the simulation.")
     parser.add_argument("--delay", type=float, default=0.0, help="Minutes after nominal to start.")
     parser.add_argument("--anom_overhead_scale", type=float, default=0.0, help="scale of scatter in the slew")
@@ -700,7 +695,6 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
     keep_rewards = args.keep_rewards
     tags = args.tags
     label = args.label
-    capture_env = args.capture_env
     telescope = args.telescope
     delay = args.delay
     anom_overhead_scale = args.anom_overhead_scale
@@ -751,7 +745,6 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
             in_files={"scheduler": args.scheduler, "observatory": args.observatory},
             tags=tags,
             label=label,
-            capture_env=capture_env,
             opsim_metadata={"telescope": telescope},
             data_path=results_dir,
         )
