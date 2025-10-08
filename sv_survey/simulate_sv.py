@@ -14,7 +14,6 @@ import rubin_nights.dayobs_utils as rn_dayobs
 import rubin_nights.rubin_sim_addons as rn_sim
 from astroplan import Observer
 from astropy.time import Time, TimeDelta
-from lsst.resources import ResourcePath
 from rubin_nights import connections
 from rubin_nights.augment_visits import augment_visits
 from rubin_scheduler.scheduler import sim_runner
@@ -24,7 +23,7 @@ from rubin_scheduler.scheduler.utils import (
     SchemaConverter,
 )
 from rubin_scheduler.utils import Site
-from rubin_sim.sim_archive import make_sim_archive_dir, transfer_archive_dir
+from rubin_sim.sim_archive import make_sim_data_dir
 from rubin_sim.sim_archive.make_snapshot import get_scheduler_from_config
 from rubin_sim.sim_archive.prenight import AnomalousOverheadFunc
 
@@ -658,9 +657,6 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
     parser.add_argument("sim_nights", type=int, help="number of nights to run.")
     parser.add_argument("run_name", type=str, help="Run (also db output) name.")
     parser.add_argument("--keep_rewards", action="store_true", help="Compute rewards data.")
-    parser.add_argument(
-        "--archive", type=str, default="", help="URI of the archive in which to store the results"
-    )
     parser.add_argument("--telescope", type=str, default="simonyi", help="The telescope simulated.")
     parser.add_argument("--label", type=str, default="", help="The tags on the simulation.")
     parser.add_argument("--delay", type=float, default=0.0, help="Minutes after nominal to start.")
@@ -691,7 +687,6 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
     sim_nights = args.sim_nights
     run_name = args.run_name
     nside = observatory.nside
-    archive_uri = args.archive
     keep_rewards = args.keep_rewards
     tags = args.tags
     label = args.label
@@ -711,7 +706,7 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
 
     survey_info = svs.survey_times(verbose=True, no_downtime=True, nside=nside)
 
-    if len(archive_uri) == 0 and results_dir is None:
+    if results_dir is None:
         run_sv_sim(
             scheduler,
             observatory,
@@ -738,7 +733,7 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
         )
         LOGGER.info("Simulation complete.")
 
-        data_path = make_sim_archive_dir(
+        data_path = make_sim_data_dir(
             observations,
             rewards if keep_rewards else None,
             obs_rewards if keep_rewards else None,
@@ -749,9 +744,5 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
             data_path=results_dir,
         )
         LOGGER.info(f"Wrote results in directory: {data_path.name}")
-
-        if len(archive_uri) == 0:
-            sim_archive_uri = transfer_archive_dir(data_path.name, archive_uri)
-            LOGGER.info(f"Transferred {data_path} to {sim_archive_uri}")
 
     return 0
