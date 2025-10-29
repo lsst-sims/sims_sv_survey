@@ -23,7 +23,7 @@ from rubin_scheduler.scheduler.utils import (
     SchemaConverter,
 )
 from rubin_scheduler.utils import Site
-from rubin_sim.sim_archive import make_sim_archive_dir, transfer_archive_dir
+from rubin_sim.sim_archive import make_sim_data_dir
 from rubin_sim.sim_archive.make_snapshot import get_scheduler_from_config
 from rubin_sim.sim_archive.prenight import AnomalousOverheadFunc
 
@@ -657,15 +657,7 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
     parser.add_argument("sim_nights", type=int, help="number of nights to run.")
     parser.add_argument("run_name", type=str, help="Run (also db output) name.")
     parser.add_argument("--keep_rewards", action="store_true", help="Compute rewards data.")
-    parser.add_argument(
-        "--archive", type=str, default="", help="URI of the archive in which to store the results"
-    )
     parser.add_argument("--telescope", type=str, default="simonyi", help="The telescope simulated.")
-    parser.add_argument(
-        "--capture_env",
-        action="store_true",
-        help="Record the current environment as the simulation environment.",
-    )
     parser.add_argument("--label", type=str, default="", help="The tags on the simulation.")
     parser.add_argument("--delay", type=float, default=0.0, help="Minutes after nominal to start.")
     parser.add_argument("--anom_overhead_scale", type=float, default=0.0, help="scale of scatter in the slew")
@@ -676,6 +668,7 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
         help="random number seed for anomalous scatter in overhead",
     )
     parser.add_argument("--tags", type=str, default=[], nargs="*", help="The tags on the simulation.")
+    parser.add_argument("--results", type=str, default='', help="Results directory.")
     args = parser.parse_args() if len(cli_args) == 0 else parser.parse_args(cli_args)
 
     with open(args.scheduler, "rb") as sched_io:
@@ -694,15 +687,14 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
     sim_nights = args.sim_nights
     run_name = args.run_name
     nside = observatory.nside
-    archive_uri = args.archive
     keep_rewards = args.keep_rewards
     tags = args.tags
     label = args.label
-    capture_env = args.capture_env
     telescope = args.telescope
     delay = args.delay
     anom_overhead_scale = args.anom_overhead_scale
     anom_overhead_seed = args.anom_overhead_seed
+    results_dir = args.results if len(args.results)>0 else None
 
     if anom_overhead_scale > 0:
         anomalous_overhead_func = AnomalousOverheadFunc(anom_overhead_seed, anom_overhead_scale)
@@ -714,7 +706,7 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
 
     survey_info = svs.survey_times(verbose=True, no_downtime=True, nside=nside)
 
-    if len(archive_uri) == 0:
+    if results_dir is None:
         run_sv_sim(
             scheduler,
             observatory,
@@ -741,19 +733,16 @@ def run_sv_sim_cli(cli_args: list = []) -> int:
         )
         LOGGER.info("Simulation complete.")
 
-        data_path = make_sim_archive_dir(
+        data_path = make_sim_data_dir(
             observations,
             rewards if keep_rewards else None,
             obs_rewards if keep_rewards else None,
             in_files={"scheduler": args.scheduler, "observatory": args.observatory},
             tags=tags,
             label=label,
-            capture_env=capture_env,
             opsim_metadata={"telescope": telescope},
+            data_path=results_dir,
         )
-        LOGGER.info(f"Created simulation archived directory: {data_path.name}")
-
-        sim_archive_uri = transfer_archive_dir(data_path.name, archive_uri)
-        LOGGER.info(f"Transferred {data_path} to {sim_archive_uri}")
+        LOGGER.info(f"Wrote results in directory: {data_path.name}")
 
     return 0
