@@ -550,17 +550,21 @@ def count_obstime(observations: ObservationArray, survey_info: dict) -> dict:
         Adds the observed time per night to the survey_info object.
     """
     obs_time = np.zeros(len(survey_info["sunrises"]))
-    for i in range(len(survey_info["sunrises"])):
-        idx = np.where(
-            (observations["mjd"] >= survey_info["sunsets"][i])
-            & (observations["mjd"] <= survey_info["sunrises"][i])
-        )[0]
-        obs_time[i] = (observations["visittime"][idx] + observations["slewtime"][idx]).sum() / 60 / 60
+    if len(observations) > 0:
+        for i in range(len(survey_info["sunrises"])):
+            idx = np.where(
+                (observations["mjd"] >= survey_info["sunsets"][i])
+                & (observations["mjd"] <= survey_info["sunrises"][i])
+            )[0]
+            obs_time[i] = (observations["visittime"][idx] + observations["slewtime"][idx]).sum() / 60 / 60
 
     tnight = float(survey_info["hours_in_night"].sum())
     tdown = float(survey_info["downtime_per_night"].sum())
     tavail = float(survey_info["avail_per_night"].sum())
-    tobs = float((observations["visittime"].sum() + observations["slewtime"].sum()) / 60 / 60)
+    if len(observations) > 0:
+        tobs = float((observations["visittime"].sum() + observations["slewtime"].sum()) / 60 / 60)
+    else:
+        tobs = 0
 
     print(f"Total night time (hours): {tnight:.2f}")
     print(f"Total down time (hours): {tdown:.2f}")
@@ -608,11 +612,14 @@ def save_opsim(
     visits_df
         A DataFrame of both initial and simulated visits, in opsim format.
     """
-    sim_visits = SchemaConverter().obs2opsim(observations)
-    if initial_opsim is not None:
-        visits_df = pd.concat([initial_opsim, sim_visits])
+    if len(observations) > 0:
+        sim_visits = SchemaConverter().obs2opsim(observations)
+        if initial_opsim is not None:
+            visits_df = pd.concat([initial_opsim, sim_visits])
+        else:
+            visits_df = sim_visits
     else:
-        visits_df = sim_visits
+        visits_df = initial_opsim
     if filename is not None:
         con = sqlite3.connect(filename)
         visits_df.to_sql("observations", con, index=False, if_exists="replace")
